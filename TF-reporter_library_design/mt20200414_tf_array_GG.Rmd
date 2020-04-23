@@ -1,0 +1,380 @@
+---
+title: "Golden Gate TF reporter assembly - Sequence design"
+author: "Max Trauernicht"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# knitr document van Steensel lab
+
+# Introduction
+Here, I will document how I designed the sequences for the tandem TF reporter array. The goal of the Golden Gate cloning is to assemble 6 different TF reporters. To do so, I will order single-stranded oligos in a pool, which can be used for PCR. This PCR adds overhangs that include typeIIs restriction enzyme sites. The primer design to add the overhangs will be done with NEBs Golde Gate Assembly Tool (https://goldengate.neb.com/). I will design 2 different methods for the assembly:
+  **I. TF reporters with each a unique primer annealing site**
+  **II. TF reporters with the same primer annealing site**
+
+-> In approach I. I can add unique overhangs to each TF reporter and then perform GG assembly. In approach II. I create TF reporters with 6 possible overhangs. This allows random shuffling of the TF reporters in the following GG assembly step. Approach II. should be less efficient, but more flexible. 
+
+**Additional design details:**
+- 5' and 3' primer sequence as described above
+- In approach I.: additional EcoRI site in 5' flank - allows to add additional 6 TF reporters (that have EcoRI sites in the 3' and 5' flank)
+- In approach I.: I-CeuI sites in 3' and 5' flank - inside of the primer sequences, outside of the EcoRI site
+- 4 TF motifs
+- spacing from previous 30 TF reporter library design - 10bp spacing, 21bp distance
+- minP
+- Illumina primer adapter sequence after minP (same as before)
+- 12bp barcode (as before)
+- spacing after barcode - ~60 bp: inactive spacing (~20bp) + 2 primer annealing sites (RT & consecutive PCR)
+- pA site: minimal pA site from TRIP paper
+- Insulators can be added later
+
+
+**Assembly controls:**
+- 2 instead of 6 reporters
+- 4 instead of 6 reporters
+- 6 random shuffled reporters -> non-repetitive control
+
+**TF reporters included:**
+- Stat3
+- Trp53
+- Rara
+- Gr
+- Random (negative control)
+- Nfya (positive control)
+
+**Vector backbone:**
+- p101 - without GFP
+- I-CeuI sites enable easy vector exchange
+
+## Description of Data
+How to make a good rendering table: 
+```{r table1, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
+tabl <- "
+| column1	|	column2	|	column3	|	
+|----|----|----|
+|1	|	2	|	3	|	
+|a	|	b	|	c	|	
+"
+cat(tabl) # output the table in a format good for HTML/PDF/docx conversion
+```
+
+# Data processing
+## Path, Libraries, Parameters and Useful Functions
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+StartTime <-Sys.time()
+
+# 8-digit Date tag:
+Date <- substr(gsub("-","",Sys.time()),1,8) 
+# libraries:
+library(ggplot2)
+library(seqinr)
+library(seqLogo)
+library(universalmotif)
+library(Biostrings)
+library(SimRAD)
+library(gtools)
+library(DNABarcodes)
+library(phylotools)
+library(ape)
+library(magrittr)
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+library(heatmaply)
+library(pheatmap)
+library(tibble)
+library(ggseqlogo)
+library(RColorBrewer)
+library(stringi)
+```
+
+### Custom functions
+Functions used thoughout this script.
+```{r}
+SetFileName <- function(filename, initials) {
+  # Set filename with extension and initials to make filename with date integrated.
+  filename <- substitute(filename)
+  initials <- substitute(initials)
+  filename <- paste0(initials, Date, filename)
+  filename
+}
+
+# Function to substring the right part of the motif
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+# Function to load PWM matrix
+get_pwm_feature_matrix <- function(motif_meta_fn, fimo_fn, db = 2) {
+
+  # validate args
+  valid_dbs <- 1:2
+  if(!db %in% valid_dbs)
+    stop('Invalid db (database version). Please use db=1 (maintained for backward compatibility only) or db=2')
+
+  # db=1 is maintained for backward compatibility only
+  if(db == 1) {
+
+    # read in motif metadata
+    motif_meta    <- read.csv(motif_meta_fn)
+
+    # check whether motif metadata contain essential annotations
+    if(!all(c('PWM.ID', 'Cognate.TF') %in% colnames(motif_meta))) {
+      message('The motif metadata file does not contain the essential columns PWM.ID and Cognate.TF')
+    }
+
+    motif_minimal <- motif_meta[, c('PWM.ID', 'Cognate.TF')]
+
+    # load fimo output --> extract motif id, sequence id and p-value
+    df <- read.table(fimo_fn)
+    df <- df[, c(1, 2, 7)]
+
+    colnames(df) <- c('PWM.ID', 'seqid', 'pval')
+
+    # add TF id
+    df <- merge(df, motif_minimal, by = 'PWM.ID')
+
+    # group motif hits by sequence id
+    l <- split(df, df[['seqid']])
+
+    # multiple PWM and multiple hits possible. Reduce hits to one per TF, keeping best p-val only
+    l <- lapply(l, function(x) {
+      x_by_tf <- split(x, x[['Cognate.TF']], drop = TRUE)
+      x_by_tf <- lapply(x_by_tf, function(y) y[which.min(y$pval), ])
+      do.call('rbind', x_by_tf)
+    })
+
+    # initialize feature matrix
+    n_tf          <- motif_minimal[['Cognate.TF']] %>%
+      unique %>%
+      length
+    n_seq         <- length(l)
+    pwm           <- matrix(1, nrow = n_seq, ncol = n_tf)
+    colnames(pwm) <- (motif_minimal[['Cognate.TF']] %>% unique)
+
+    # replace :: from names of composite motifs
+    colnames(pwm) <- str_replace_all(colnames(pwm), '::', '_')
+
+    # fill in feature matrix
+    for(i in 1 : n_seq) {
+      pwm[i, l[[i]][['Cognate.TF']]] <- l[[i]]$pval
+    }
+
+    # -log10 transform
+    pwm           <- -1 * log10(pwm)
+
+    # coerce to tib and return
+    tib_fimo <- as_data_frame(pwm) %>%
+      mutate(id = names(l))
+      dplyr::select(id, everything())
+
+  }
+
+  # db = 2 (default)
+  else {
+
+    # load metadata
+    tib_meta    <- read_csv(motif_meta_fn) %>%
+      # extract tf symbol from motif id (Cognate_TF unsafe, it can be empty) and replace :: occurrences
+      mutate(tf_symbol = str_remove(ID, '_[0-9]*'),
+             tf_symbol = str_replace(tf_symbol, '::', '_')) %>%
+      select(motif_id = `PWM ID`, tf_symbol)
+
+    # load fimo results
+    tib_fimo <- read_tsv(fimo_fn) %>%
+      # extract motif id, sequence id and p-value
+      select(motif_id, sequence_name, pval = `p-value`)
+
+    # add tf symbol to fimo results
+    tib_fimo <- tib_fimo %>%
+      left_join(tib_meta, by = 'motif_id') %>%
+      # remove hits with missing motif id (composite pwms)
+      filter(!is.na(tf_symbol))
+
+    # select best hit for each motif and sequence
+    tib_fimo <- tib_fimo %>%
+      group_by(sequence_name, tf_symbol) %>%
+      dplyr::slice(which.min(pval)) %>%
+      ungroup()
+
+    # spread into feature matrix
+    tib_fimo <- tib_fimo %>%
+      mutate(pval = -1 * log10(pval)) %>%
+      select(-motif_id) %>%
+      spread(key = tf_symbol, value = pval, fill = 0, drop = TRUE) %>%
+      # perform cosmetics on the id
+      mutate(id = sequence_name) %>%
+      select(-c(sequence_name)) %>%
+      select(id, everything())
+
+  }
+
+  return(tib_fimo)
+
+}
+```
+
+
+## Data import
+```{r}
+tf.array <- read.csv("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/SuRE_TF_1/TF-reporter_library_design/output/mt20191205_tf-array.csv")
+```
+
+
+
+# TF array sequence design
+
+## Selecting TF reporters
+```{r}
+# Select relevant TF reporters
+tf.array$TF[tf.array$TF == "Nr3c1(GR)"]  <- "Gr"
+tfs.selected <- c("^Stat3$", "^Trp53$", "^Random1$", "^Rara$", "^Gr$", "^Nfya$")
+tf.array <- tf.array[grep(paste(tfs.selected, collapse = "|"),tf.array$TF),]
+tf.array <- tf.array[tf.array$Promoter == "minP" & tf.array$Distance == "21bp" &
+                       tf.array$Spacing == "10bp" & tf.array$Background == 1 &
+                       tf.array$Barcode == 4,]
+
+# Add 28bp spacing after barcode - this is the maximum length which allows me to stay below 350bp total length
+tf.array$bc_spacer <- "CATCGTCGCATCCAAGAGGctagctaac" #same sequence as in previous library design
+
+# Add RT primer sequence in front of pA signal 
+tf.array$RT_primer <- "gccatgaagatcgagtgccgcatcaccgtggagttcgagctggtgggcggcggagagg" #same as conventional SuRE protocol
+
+# Attach pA site (sNRP-1)
+tf.array$pA <- "cttgtgactgggaaaaccctggcgtaaataaaatacgaaatg"
+```
+
+
+## Adding primer 1 sequences
+```{r}
+# Primer sequences that were identified from 30 TF library design 
+primer1 <- cbind.data.frame(unique(tf.array$TF),
+                            c("AGCGTGGTAAATACCTAG","TAGAATGTACGCGCATCG",
+                              "GAACGCTAGTCTGTACGC","CTCGTAATAGCGTCATAG",
+                              "ATCCTAGGACCGCTATAG","ATCGGTACTCTACTTTAG"))
+names(primer1) <- c("TF", "primer1_seq")
+for (i in primer1$TF) {
+  tf.array$Primer1_seq[tf.array$TF == i] <- primer1$primer1_seq[primer1$TF == i]
+    
+}
+```
+
+
+## Adding primer 2 sequences
+```{r}
+# Primer sequences that were identified from 30 TF library design 
+primer2 <- cbind.data.frame(unique(tf.array$TF),
+                            c("TCCCTCACCACGGCTCTG","CGTGCTAAGGCTTGACGC",
+                              "CGGTATACTAAAGTGGAC","GCCTAAAGCCGCAACTGC",
+                              "AGAGGCAGCAGTGAATCC","TGACATCGCAGGGCCAGG"))
+names(primer2) <- c("TF", "primer2_seq")
+for (i in primer2$TF) {
+  tf.array$Primer2_seq[tf.array$TF == i] <- primer2$primer2_seq[primer2$TF == i]
+    
+}
+```
+
+
+
+
+
+```{r}
+# Concatenate intermediate sequence
+tf.array$reporter <- paste(tf.array$Primer1_seq, tf.array$motif1, 
+                           tf.array$Space1, tf.array$motif2, tf.array$Space2, tf.array$motif3, 
+                           tf.array$Space3, tf.array$motif4, tf.array$Distance_seq, tf.array$Promoter_sequence,
+                           tf.array$S1_primer, tf.array$barcode, tf.array$bc_spacer,
+                           tf.array$RT_primer, tf.array$pA, tf.array$Primer2_seq, 
+                           sep = "")
+tf.array_export <- tf.array %>% select(TF, reporter)
+
+# Check length of oligos (max of 350 is allowed by IDT)
+paste("Max length:", max(nchar(tf.array_export$reporter)), ", Min length:", 
+      min(nchar(tf.array_export$reporter)))
+
+# Check for BsaI restriction sites in sequence
+scan <- tf.array_export$reporter[grep("GGTCTC", tf.array_export$reporter)]
+paste("I found", length(scan), "BsaI sites")
+```
+
+
+
+
+# Add controls
+```{r}
+# Scrambled TF reporters
+tf.scrambled <- tf.array 
+tf.scrambled$reporter <- paste(tf.array$motif1, 
+                           tf.array$Space1, tf.array$motif2, tf.array$Space2, tf.array$motif3, 
+                           tf.array$Space3, tf.array$motif4, tf.array$Distance_seq, tf.array$Promoter_sequence,
+                           tf.array$S1_primer, tf.array$barcode, tf.array$bc_spacer,
+                           tf.array$RT_primer, tf.array$pA, sep = "")
+set.seed(112321)
+tf.scrambled$reporter_scr <- stri_rand_shuffle(tf.scrambled$reporter) # Shuffle DNA sequence
+tf.scrambled$Primer1_seq <- c("GCTATGCGTATCCGACAT", "GTATATTAGTCGGATCTA", "GTAAGTCTTTGAGAGTTA",
+                              "GAGACGCTGCCAATTCGT", "TGCATCCCCCGTCATCTA", "GAGCTATAAGGTAAGTCT")
+tf.scrambled$Primer2_seq <- c("GAGATTGACGATTCCCAA", "TCAGCTGGAGCCTATACA", "CTCGTGCAATGCGATTCC",
+                              "GACATTTTGCCTGCTTCG", "CGTATAAAGACTCACGGA", "TGGTTGAATGTAAGGCGT")
+tf.scrambled$seq <- paste(tf.scrambled$Primer1_seq, tf.scrambled$reporter_scr, tf.scrambled$Primer2_seq, sep = "")
+tf.scrambled_export <- tf.scrambled %>% select(TF, seq)
+paste("Max length:", max(nchar(tf.scrambled_export$seq)))
+
+# Check for BsaI restriction sites in sequence
+scan <- tf.scrambled_export$seq[grep("GGTCTC", tf.scrambled_export$seq)]
+paste("I found", length(scan), "BsaI sites")
+```
+
+
+
+# Primer design
+
+### Select sequences and overlaps based on goldengate.neb.com using the tf.array sequences as input and the p101 vector as backbone
+
+### Include primers that add:
+## - BsaI restriction sites based on goldengate.neb.com
+## - I-CeuI sites at 5' and 3' flanks
+## - an EcoRI site at 3' flank in front of I-CeuI site to insert more GG assemblies (alternatively typeIIs site)
+## - approach II primer sequences (to allow shuffling of TF reporters)
+
+
+
+## Reporter export
+```{r}
+# Export TF reporter sequences
+filename <- SetFileName("_tf-reporter-seq", "mt")
+setwd("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/SuRE_TF_1/TF-reporter_library_design/output/")
+write.csv(tf.array_export, file = paste(filename,".csv", sep = ""), row.names = F)
+
+filename <- SetFileName("_tf-reporter-scrambled", "mt")
+setwd("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/SuRE_TF_1/TF-reporter_library_design/output/")
+write.csv(tf.scrambled_export, file = paste(filename,".csv", sep = ""), row.names = F)
+```
+
+
+
+
+# Conclusions
+```{r}
+```
+
+## Exporting potential data. 
+```{r}
+```
+
+# Session Info
+```{r}
+paste("Run time: ",format(Sys.time()-StartTime))
+getwd()
+date()
+sessionInfo()
+```
+

@@ -1,0 +1,436 @@
+---
+title: "TF Array Design"
+author: "Max Trauernicht"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# knitr document van Steensel lab
+
+# TF activity reporter array
+
+# Introduction
+The goal of this script is to select TF reporters from the oligo design script which can be assembled for integration in mESCs. Assembly will be performed based on bridging ligation. For this optimal bridging oligos have to be designed in this script.
+
+# Data processing
+## Path, Libraries, Parameters and Useful Functions
+```{r setup, echo=FALSE, message=FALSE, warnings=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+StartTime <-Sys.time()
+
+# 8-digit Date tag:
+Date <- substr(gsub("-","",Sys.time()),1,8) 
+# libraries:
+library(ggplot2)
+library(seqinr)
+library(seqLogo)
+library(universalmotif)
+library(Biostrings)
+library(SimRAD)
+library(gtools)
+library(DNABarcodes)
+library(phylotools)
+library(ape)
+library(magrittr)
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+library(heatmaply)
+library(pheatmap)
+library(tibble)
+library(ggseqlogo)
+library(RColorBrewer)
+```
+
+### Custom functions
+Functions used thoughout this script.
+```{r}
+SetFileName <- function(filename, initials) {
+  # Set filename with extension and initials to make filename with date integrated.
+  filename <- substitute(filename)
+  initials <- substitute(initials)
+  filename <- paste0(initials, Date, filename)
+  filename
+}
+
+# Function to substring the right part of the motif
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+# Function to load PWM matrix
+get_pwm_feature_matrix <- function(motif_meta_fn, fimo_fn, db = 2) {
+
+  # validate args
+  valid_dbs <- 1:2
+  if(!db %in% valid_dbs)
+    stop('Invalid db (database version). Please use db=1 (maintained for backward compatibility only) or db=2')
+
+  # db=1 is maintained for backward compatibility only
+  if(db == 1) {
+
+    # read in motif metadata
+    motif_meta    <- read.csv(motif_meta_fn)
+
+    # check whether motif metadata contain essential annotations
+    if(!all(c('PWM.ID', 'Cognate.TF') %in% colnames(motif_meta))) {
+      message('The motif metadata file does not contain the essential columns PWM.ID and Cognate.TF')
+    }
+
+    motif_minimal <- motif_meta[, c('PWM.ID', 'Cognate.TF')]
+
+    # load fimo output --> extract motif id, sequence id and p-value
+    df <- read.table(fimo_fn)
+    df <- df[, c(1, 2, 7)]
+
+    colnames(df) <- c('PWM.ID', 'seqid', 'pval')
+
+    # add TF id
+    df <- merge(df, motif_minimal, by = 'PWM.ID')
+
+    # group motif hits by sequence id
+    l <- split(df, df[['seqid']])
+
+    # multiple PWM and multiple hits possible. Reduce hits to one per TF, keeping best p-val only
+    l <- lapply(l, function(x) {
+      x_by_tf <- split(x, x[['Cognate.TF']], drop = TRUE)
+      x_by_tf <- lapply(x_by_tf, function(y) y[which.min(y$pval), ])
+      do.call('rbind', x_by_tf)
+    })
+
+    # initialize feature matrix
+    n_tf          <- motif_minimal[['Cognate.TF']] %>%
+      unique %>%
+      length
+    n_seq         <- length(l)
+    pwm           <- matrix(1, nrow = n_seq, ncol = n_tf)
+    colnames(pwm) <- (motif_minimal[['Cognate.TF']] %>% unique)
+
+    # replace :: from names of composite motifs
+    colnames(pwm) <- str_replace_all(colnames(pwm), '::', '_')
+
+    # fill in feature matrix
+    for(i in 1 : n_seq) {
+      pwm[i, l[[i]][['Cognate.TF']]] <- l[[i]]$pval
+    }
+
+    # -log10 transform
+    pwm           <- -1 * log10(pwm)
+
+    # coerce to tib and return
+    tib_fimo <- as_data_frame(pwm) %>%
+      mutate(id = names(l))
+      dplyr::select(id, everything())
+
+  }
+
+  # db = 2 (default)
+  else {
+
+    # load metadata
+    tib_meta    <- read_csv(motif_meta_fn) %>%
+      # extract tf symbol from motif id (Cognate_TF unsafe, it can be empty) and replace :: occurrences
+      mutate(tf_symbol = str_remove(ID, '_[0-9]*'),
+             tf_symbol = str_replace(tf_symbol, '::', '_')) %>%
+      select(motif_id = `PWM ID`, tf_symbol)
+
+    # load fimo results
+    tib_fimo <- read_tsv(fimo_fn) %>%
+      # extract motif id, sequence id and p-value
+      select(motif_id, sequence_name, pval = `p-value`)
+
+    # add tf symbol to fimo results
+    tib_fimo <- tib_fimo %>%
+      left_join(tib_meta, by = 'motif_id') %>%
+      # remove hits with missing motif id (composite pwms)
+      filter(!is.na(tf_symbol))
+
+    # select best hit for each motif and sequence
+    tib_fimo <- tib_fimo %>%
+      group_by(sequence_name, tf_symbol) %>%
+      dplyr::slice(which.min(pval)) %>%
+      ungroup()
+
+    # spread into feature matrix
+    tib_fimo <- tib_fimo %>%
+      mutate(pval = -1 * log10(pval)) %>%
+      select(-motif_id) %>%
+      spread(key = tf_symbol, value = pval, fill = 0, drop = TRUE) %>%
+      # perform cosmetics on the id
+      mutate(id = sequence_name) %>%
+      select(-c(sequence_name)) %>%
+      select(id, everything())
+
+  }
+
+  return(tib_fimo)
+
+}
+```
+
+
+## Data import
+```{r}
+  tf.array <- read.csv("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/oligo_design/output/mt20191205_tf-array.csv")
+```
+
+# Analysis
+
+
+## Selecting TF reporters
+```{r}
+# Select relevant TF reporters
+tf.array$TF[tf.array$TF == "Nr3c1(GR)"]  <- "Gr"
+tfs.selected <- c("^Stat3$", "^Trp53$", "^Random1$", "^Rara$", "^Gr$", "^Nfya$")
+tf.array <- tf.array[grep(paste(tfs.selected, collapse = "|"),tf.array$TF),]
+tf.array <- tf.array[tf.array$Promoter == "minP" & tf.array$Distance == "21bp" &
+                       tf.array$Spacing == "10bp" & tf.array$Background == 1 &
+                       tf.array$Barcode == 4,]
+
+# Attach pA site (sNRP-1)
+tf.array$pA <- "cttgtgactgggaaaaccctggcgtaaataaaatacgaaatg"
+
+# Remove 5' and 3' primer adapter
+tf.array <- tf.array %>% select(-Primer1_seq, -Primer2_seq)
+
+# Concatenate intermediate sequence
+tf.array$reporter <- paste(tf.array$motif1, tf.array$Space1, tf.array$motif2,
+                           tf.array$Space2, tf.array$motif3, tf.array$Space3,
+                           tf.array$motif4, tf.array$Distance_seq, tf.array$Promoter_sequence,
+                           tf.array$S1_primer, tf.array$barcode, tf.array$pA, sep = "")
+tf.array <- tf.array[,c(-2:-19)]
+```
+
+
+## Add random oligos as adapters for the bridging oligos
+```{r}
+## Generate 18bp oligos - select top 12 oligos
+# moderate GC content
+# no TF binding in front of/after
+# EcoRI sites in exactly 2
+## Adding 3x random 11bp 'motifs' that serve as negative control
+x <- cbind.data.frame(c(1:2000), c(""))
+names(x) <- c("iteration", "oligo")
+
+
+# Generate 2000 random 10bp oligos
+# GC content ~50%
+set.seed(83273)
+for (i in 1:2000) {
+  x$oligo[x$iteration == i] <- sim.DNAseq(18, GCfreq = 0.5)
+}
+
+# Generate all possible combinations of these motifs with primer sequences, spacers, etc.
+tf.array2 <- merge(x, tf.array)
+
+tf.array2$seq.name <- paste(tf.array2$TF, tf.array2$iteration, sep = "_")
+
+
+# Assemble sequence to test: 4 rim bases of the TF motifs and the spacer sequence
+tf.array2$seq.text <- paste(substrRight(tf.array2$reporter, 4), 
+                       tf.array2$oligo, 
+                       substr(tf.array2$reporter, 1, 4), sep = "")
+
+# Write fasta file to run on FIMO script
+tf.array.export <- tf.array2 %>% select(seq.name, seq.text)
+# dat2fasta(tf.array.export, outfile = "/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array.fasta")     
+```
+
+
+ 
+## Run FIMO script 
+```{bash run fimo db2_9, eval = FALSE, echo=FALSE, message=FALSE, warnings=FALSE}
+# motfn=/home/f.comoglio/mydata/Annotations/TFDB/Curated_Natoli/update_2017/20170320_pwms_selected.meme
+# odir=/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array_3
+# query=/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array.fasta
+
+# nice -n 19 fimo --no-qvalue --thresh 1e-4 --verbosity 1 --o $odir $motfn $query 
+```
+
+
+
+## load fimo results
+We built a TF motif matrix using -log10 transformed FIMO scores. We used this feature encoding throughout the rest of this analysis, unless otherwise stated.
+
+```{r build tf motif matrices db2: primer_1, out.width= "100%", fig.align= "center", warning= FALSE}
+# load motif Metadata --> PWM feature matrix
+tib_pwm_tf_array  <- get_pwm_feature_matrix(motif_meta_fn = '/home/f.comoglio/mydata/Annotations/TFDB/Curated_Natoli/update_2017/fc181127_curated_metadata_no_composite_filt.csv', 
+                                        fimo_fn       = '/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array_3/fimo.tsv',
+                                        db            = 2)
+```
+
+
+## visualize fimo results
+```{r out.width= "100%", fig.align= "center", warning= FALSE, message = FALSE}
+# convert to binary
+tib_pwm_tf_array_binary <- tib_pwm_tf_array %>% mutate_if(is.numeric, function(x) ifelse((x==0 | is.na(x)),0,1)) 
+tib_pwm_tf_array_binary_top <- tib_pwm_tf_array_binary
+
+# compute rowsums to get cumulative binding
+tib_pwm_tf_array_binary_top$binding <- rowSums(tib_pwm_tf_array_binary_top[,2:ncol(tib_pwm_tf_array_binary_top)])
+
+# select only cumulative binding and id
+tib_pwm_tf_array_binary_top <- tib_pwm_tf_array_binary_top %>%
+  select(id,binding)
+
+# make third column wiht only the space_id - then sum up the binding scores per space_id
+tib_pwm_tf_array_binary_top$space <- gsub(".*_(.*)", "\\1", tib_pwm_tf_array_binary_top$id)
+tib_pwm_tf_array_binary_top <- tib_pwm_tf_array_binary_top %>%
+  select(-id)
+tib_pwm_tf_array_binary_top$cum_binding <- ave(tib_pwm_tf_array_binary_top$binding, tib_pwm_tf_array_binary_top$space,
+                                             FUN = sum)
+tib_pwm_tf_array_binary_top <- tib_pwm_tf_array_binary_top %>%
+  select(-binding)
+tib_pwm_tf_array_binary_top <- unique(tib_pwm_tf_array_binary_top)
+
+# Identify spacers that were exlcuded from fimo script (due to 0 hits)
+space_id <- unique(tib_pwm_tf_array_binary_top$space)
+iteration <- 1:2000
+space_nohit <- iteration[! iteration %in% space_id]
+# 140 possible oligos
+
+# Select oligos without EcoRI sites (as I might want to clone with EcoRI)
+remove_primer_1 <- tf.array2[grep("GAATTC", tf.array2$seq.text),]
+remove_primer_1 <- unique(remove_primer_1$iteration)
+space_nohit <- space_nohit[!space_nohit %in% remove_primer_1]
+paste (length(space_nohit), "oligos have no TF binding and could serve as adapters")
+```
+
+## Select sequences
+```{r select sequences, warning= FALSE, message = FALSE}
+# Select oligos
+oligos_noEco <- unique(tf.array2[tf.array2$iteration %in% space_nohit,2])
+
+# Compute GC contents & select with 9/20 - 11/20 GC content
+dna_string <- DNAStringSet(oligos_noEco)
+oligos_noEco <- as.data.frame(oligos_noEco)
+oligos_noEco$gc <- letterFrequency(dna_string, "GC")
+oligos_noEco <- oligos_noEco[oligos_noEco$gc >= 9 & oligos_noEco$gc <= 11,]
+
+# Primer sequence should start & end with C/G
+oligos_noEco <- oligos_noEco[grep(".*[C;G]$", oligos_noEco$oligos_noEco),]
+oligos_noEco <- oligos_noEco[grep("^[C;G].*$", oligos_noEco$oligos_noEco),]
+
+# Manually select top 12 selection (based on primer qualities)
+oligos_noEco <- oligos_noEco[c(1,2,4,5,6,7,9,11,12,14,15,16),]
+
+# Determine which oligos would be good as left/right anchor
+oligo_left <- substr(oligos_noEco$oligos_noEco, 1, 10)
+oligo_right <- substr(oligos_noEco$oligos_noEco, 9, 18)
+bridge <- merge(oligo_left, oligo_right)
+
+## Test the GC content of left/right 10bp parts
+oligo_left <- substr(oligos_noEco$oligos_noEco, 1, 10)
+oligo_right <- substr(oligos_noEco$oligos_noEco, 9, 18)
+oligo_left <- as.data.frame(oligo_left)
+oligo_right <- as.data.frame(oligo_right)
+oligo_left$id_left <- 1:12
+oligo_right$id_right <- 1:12
+
+## Compute GCs
+oligo_left_string <- DNAStringSet(oligo_left$oligo_left)
+oligo_left$gc <- letterFrequency(oligo_left_string, "GC")
+oligo_right_string <- DNAStringSet(oligo_right$oligo_right)
+oligo_right$gc <- letterFrequency(oligo_right_string, "GC")
+# Manual investigation gives the following separation:
+right <- c("^9$","^10$","^5$","^7$","^11$","^12$")
+oligo_right <- oligo_right[grep(paste(right, collapse = "|"), oligo_right$id_right),]
+left <- c("^1$","^3$","^6$","^2$","^4$","^8$")
+oligo_left <- oligo_left[grep(paste(left, collapse = "|"), oligo_left$id_left),]
+
+
+# Fuse oligo adapters to reporters
+oligo_left_sel <- oligos_noEco[c(1,2,3,4,6,8),]
+oligo_right_sel <- oligos_noEco[c(5,7,9,10,11,12),]
+tf.array$oligo.left <- oligo_left_sel$oligos_noEco
+tf.array$oligo.right <- oligo_right_sel$oligos_noEco
+tf.array$seq.text <- paste(tf.array$oligo.left, tf.array$reporter, tf.array$oligo.right, sep = "")
+tf.array <- tf.array %>% select(TF, seq.text)
+for (i in unique(tf.array$TF)){
+p <- paste("Length oligo - ", i, ": ", nchar(tf.array$seq.text[tf.array$TF == i]), sep = "")
+print(p)
+}
+
+
+
+# Check if the constructs have one of these restriction enzyme sites (needed for downstream cloning):
+## AatII,  ApaI, BbsI, BmrI, BmtI, BsaI, BsgI, BsmBI, BsmI, BspQI,  BsrDI,  BtgZI,  BtgZI,  BtsI,  FseI,  KpnI,  NsiI,  PstI, SacI, SbfI, SphI
+restriction.enzyme <- c("GACGTC", "GGGCCC", "GAAGAC", "ACTGGG", "GCTAGC", "GGTCTC", "GTGCAG", "CGTCTC", "GAATGC", "GCTCTTC", "GCAATG", "GCGATG", "GCAGTG", "GGCCGGCC", "GGTACC", "ATGCAT", "CTGCAG", "GAGCTC", "CCTGCAGG", "GCATGC")
+
+# Check if the constructs have one of these nicking enzyme sites (needed for downstream cloning)
+## Nb.BsmI, Nb.BsrDI, Nb.BtsI, Nb.BbvCI
+nicking.enzyme <- c("GAATGC", "GCAATG", "GCAGTG", "CCTCAGC")
+
+restriction <- tf.array[grep(paste(restriction.enzyme, collapse = "|"), tf.array$seq.text),]
+nicking <- tf.array[grep(paste(nicking.enzyme, collapse = "|"), tf.array$seq.text),]
+```
+
+# Generate bridging oligos from selected oligo adapters
+```{r, warning= FALSE, message = FALSE}
+# 12 adapter were chosen for 6 reporters
+## Now we need to choose 10 bridging oligos, overlapping with the left 10 bp of the upstream reporter and the right 10 bp of the downstream reporter
+# 4 possible orders will be created
+
+# Generate bridging oligo combinations
+oligo_left <- oligo_left %>% select(-gc)
+oligo_right <- oligo_right %>% select(-gc)
+bridge <- merge(oligo_left, oligo_right)
+bridge$oligos <- paste(bridge$oligo_right, bridge$oligo_left, sep = "")
+bridge$id <- paste(bridge$id_right, bridge$id_left, sep = "_")
+bridge <- bridge %>% select(oligos, id)
+
+# Compute GC content of bridges
+bridge_string <- DNAStringSet(bridge$oligos)
+bridge$gc <- letterFrequency(bridge_string, "GC")
+
+# 4 Random orders were chosen
+order1 <- c("5_3","9_4","10_6","11_8","12_2")
+oligos_order1 <- bridge[grep(paste(order1, collapse = "|"), bridge$id) ,]
+oligos_order1$order <- 1
+order2 <- c("11_3","9_1","5_8","12_2","7_4")
+oligos_order2 <- bridge[grep(paste(order2, collapse = "|"), bridge$id) ,]
+oligos_order2$order <- 2
+order3 <- c("7_8","12_6","11_3","9_1","5_4")
+oligos_order3 <- bridge[grep(paste(order3, collapse = "|"), bridge$id) ,]
+oligos_order3$order <- 3
+order4 <- c("10_8","12_3","9_2","7_6","11_1")
+oligos_order4 <- bridge[grep(paste(order4, collapse = "|"), bridge$id) ,]
+oligos_order4$order <- 4
+
+# bridging oligos that combine complete 6-TF reporter constructs
+order1_order2_order3_order4_order1 <- c("7_6", "10_2", "10_4", "5_1")
+oligos_order1_order2_order3_order4_order1 <- bridge[grep(paste(order1_order2_order3_order4_order1, collapse = "|"), bridge$id) ,]
+```
+
+
+## Exporting data 
+```{r}
+# TF reporters with primer adapters
+filename <- SetFileName("_TF_array_reporters", "mt")
+setwd("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/oligo_design/integrated_TF_array_design/output/")
+write.csv(tf.array, file = paste(filename,".csv", sep = ""), row.names = F)
+
+# Bridging oligos
+bridging_oligos <- rbind(oligos_order1,oligos_order2,oligos_order3,oligos_order4) %>% select(oligos, order)
+filename <- SetFileName("_bridging_oligos", "mt")
+setwd("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/oligo_design/integrated_TF_array_design/output/")
+write.csv(bridging_oligos, file = paste(filename,".csv", sep = ""), row.names = F)
+```
+
+# Session Info
+```{r}
+paste("Run time: ",format(Sys.time()-StartTime))
+getwd()
+date()
+sessionInfo()
+```
+
