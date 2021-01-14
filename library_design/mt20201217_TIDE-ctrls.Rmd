@@ -1,0 +1,335 @@
+---
+title: "cDNA reads processing - Deep P53/GR scan - stimulation 1"
+author: "Max Trauernicht"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+  #   toc: true
+  #   toc_float: true
+  #   code_folding: show
+  # editor_options:
+  #   chunk_output_type: console
+---
+
+*knitr document van Steensel lab*
+
+# Introduction
+Here, I will document how I designed positive control sequences for TF-array activity readout. This way, I want to find an optimal design that can be standardized to assemble TF arrays. My first approaches indicated that TF arrays require stronger pASs to terminate transcription. 
+
+**Additional design details:**
+- 5' and 3' primer sequence as before
+- TF response elements chosen from publications
+- Illumina primer adapter sequence after minP (same as before)
+- variable barcode length for TIDE readout
+- spacing after barcode - ~60 bp: inactive spacing (~20bp) + 2 primer annealing sites (RT & consecutive PCR)
+- pA site: minimal pA site from TRIP paper or SV-40 pAS
+- Insulators sequence
+
+
+**TF reporters included:**
+- STAT3
+- Random (negative control)
+- NFYA (positive control)
+- TCF7
+- NRF
+
+**Vector backbone:**
+- p101 - without GFP
+
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+StartTime <-Sys.time()
+
+# 8-digit Date tag:
+Date <- substr(gsub("-","",Sys.time()),1,8) 
+# libraries:
+library(ggplot2)
+library(seqinr)
+library(seqLogo)
+library(universalmotif)
+library(Biostrings)
+library(SimRAD)
+library(gtools)
+library(DNABarcodes)
+library(phylotools)
+library(ape)
+library(magrittr)
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+library(heatmaply)
+library(pheatmap)
+library(tibble)
+library(ggseqlogo)
+library(RColorBrewer)
+library(stringi)
+```
+
+### Custom functions
+Functions used thoughout this script.
+```{r}
+SetFileName <- function(filename, initials) {
+  # Set filename with extension and initials to make filename with date integrated.
+  filename <- substitute(filename)
+  initials <- substitute(initials)
+  filename <- paste0(initials, Date, filename)
+  filename
+}
+
+# Function to substring the right part of the motif
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+# Function to load PWM matrix
+get_pwm_feature_matrix <- function(motif_meta_fn, fimo_fn, db = 2) {
+
+  # validate args
+  valid_dbs <- 1:2
+  if(!db %in% valid_dbs)
+    stop('Invalid db (database version). Please use db=1 (maintained for backward compatibility only) or db=2')
+
+  # db=1 is maintained for backward compatibility only
+  if(db == 1) {
+
+    # read in motif metadata
+    motif_meta    <- read.csv(motif_meta_fn)
+
+    # check whether motif metadata contain essential annotations
+    if(!all(c('PWM.ID', 'Cognate.TF') %in% colnames(motif_meta))) {
+      message('The motif metadata file does not contain the essential columns PWM.ID and Cognate.TF')
+    }
+
+    motif_minimal <- motif_meta[, c('PWM.ID', 'Cognate.TF')]
+
+    # load fimo output --> extract motif id, sequence id and p-value
+    df <- read.table(fimo_fn)
+    df <- df[, c(1, 2, 7)]
+
+    colnames(df) <- c('PWM.ID', 'seqid', 'pval')
+
+    # add TF id
+    df <- merge(df, motif_minimal, by = 'PWM.ID')
+
+    # group motif hits by sequence id
+    l <- split(df, df[['seqid']])
+
+    # multiple PWM and multiple hits possible. Reduce hits to one per TF, keeping best p-val only
+    l <- lapply(l, function(x) {
+      x_by_tf <- split(x, x[['Cognate.TF']], drop = TRUE)
+      x_by_tf <- lapply(x_by_tf, function(y) y[which.min(y$pval), ])
+      do.call('rbind', x_by_tf)
+    })
+
+    # initialize feature matrix
+    n_tf          <- motif_minimal[['Cognate.TF']] %>%
+      unique %>%
+      length
+    n_seq         <- length(l)
+    pwm           <- matrix(1, nrow = n_seq, ncol = n_tf)
+    colnames(pwm) <- (motif_minimal[['Cognate.TF']] %>% unique)
+
+    # replace :: from names of composite motifs
+    colnames(pwm) <- str_replace_all(colnames(pwm), '::', '_')
+
+    # fill in feature matrix
+    for(i in 1 : n_seq) {
+      pwm[i, l[[i]][['Cognate.TF']]] <- l[[i]]$pval
+    }
+
+    # -log10 transform
+    pwm           <- -1 * log10(pwm)
+
+    # coerce to tib and return
+    tib_fimo <- as_data_frame(pwm) %>%
+      mutate(id = names(l))
+      dplyr::select(id, everything())
+
+  }
+
+  # db = 2 (default)
+  else {
+
+    # load metadata
+    tib_meta    <- read_csv(motif_meta_fn) %>%
+      # extract tf symbol from motif id (Cognate_TF unsafe, it can be empty) and replace :: occurrences
+      mutate(tf_symbol = str_remove(ID, '_[0-9]*'),
+             tf_symbol = str_replace(tf_symbol, '::', '_')) %>%
+      select(motif_id = `PWM ID`, tf_symbol)
+
+    # load fimo results
+    tib_fimo <- read_tsv(fimo_fn) %>%
+      # extract motif id, sequence id and p-value
+      select(motif_id, sequence_name, pval = `p-value`)
+
+    # add tf symbol to fimo results
+    tib_fimo <- tib_fimo %>%
+      left_join(tib_meta, by = 'motif_id') %>%
+      # remove hits with missing motif id (composite pwms)
+      filter(!is.na(tf_symbol))
+
+    # select best hit for each motif and sequence
+    tib_fimo <- tib_fimo %>%
+      group_by(sequence_name, tf_symbol) %>%
+      dplyr::slice(which.min(pval)) %>%
+      ungroup()
+
+    # spread into feature matrix
+    tib_fimo <- tib_fimo %>%
+      mutate(pval = -1 * log10(pval)) %>%
+      select(-motif_id) %>%
+      spread(key = tf_symbol, value = pval, fill = 0, drop = TRUE) %>%
+      # perform cosmetics on the id
+      mutate(id = sequence_name) %>%
+      select(-c(sequence_name)) %>%
+      select(id, everything())
+
+  }
+
+  return(tib_fimo)
+
+}
+```
+
+
+## Data import
+```{r}
+tf.array <- read.csv("/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/mt20191205_tf-array.csv")
+```
+
+
+
+# TF array sequence design
+
+## Selecting TF reporters
+```{r}
+# Make selection df
+selection_df <- data.frame(TF = c("Random1","Stat3","Tcf7l2","Nfya", "Nfe2l2"),
+                           Spacing = c("5bp", "10bp", "5bp", "5bp", "5bp"),
+                           Distance = c("10bp", "10bp", "10bp", "10bp", "10bp"),
+                           Promoter = c("mCMV", "mCMV", "mCMV", "mCMV", "mCMV"),
+                           Background = c("1", "3", "1", "2", "3"))
+selection_df <- selection_df %>%
+  mutate(reporter_id = paste(TF, Spacing, Distance, Promoter, Background, sep = "_"))
+
+tf.array <- tf.array %>%
+  mutate(reporter_id = paste(TF, Spacing, Distance, Promoter, Background, sep = "_")) %>%
+  filter(reporter_id %in% selection_df$reporter_id,
+         Barcode == 4)
+
+# Add 28bp spacing after barcode - this is the maximum length which allows me to stay below 350bp total length
+tf.array$bc_spacer <- "CATCGTCGCATCCAAGAGGctagctaactataacggtcctaaggtagcgaa" #same sequence as in previous library design
+
+# Add RT primer sequence in front of pA signal 
+tf.array$RT_primer <- "gccatgaagatcgagtgccgcatcaccgtggagttcgagctggtgggcggcggagagg" #same as conventional SuRE protocol
+
+# Attach pAS (sNRP1 from TRIP paper (short one)) & insulator sequence(22-3, Groth, 2013, 24098520)
+insulator <- "CTGGGTGGAGGGAGAGACGAGGGGCAGGTGAGGAAAGGCAGGGCCCCCAGAATCCCTCCATGCCTGCCCCTCAGTCTCCAGGACTTATGTGCAGGTACCGTTTGGAGCTGTGGTGCAGTTCCCAGTCTCACCACCAGATGGCACCATGCCCCTGCAGAAGCAGTGCCAGAGCAGGCCAGGTGGTTCTCGGGGGCTGCGGTGGAGGAATCCACCCAGCCGAAGCTCTGGCAGGGAAGG"
+pAS <- data.frame("pA_ID" = c("sNRP1", "SV40", "sNRP1_22-3", "SV40_22-3"),
+                  "pA_seq" = c("cttgtgactgggaaaaccctggcgtaaataaaatacgaaatg",
+                               "aacttgtttattgcagcttataatggttacaaataaagcaatagcatcacaaatttcacaaataaagcatttttttcactgcattctagttgtggtttgtccaaactcatcaatgtatctta",
+                               paste("cttgtgactgggaaaaccctggcgtaaataaaatacgaaatg", insulator, sep = ""),
+                               paste("aacttgtttattgcagcttataatggttacaaataaagcaatagcatcacaaatttcacaaataaagcatttttttcactgcattctagttgtggtttgtccaaactcatcaatgtatctta", 
+                                     insulator, sep = "")))
+tf.array <- merge(pAS, tf.array, all = T)
+tf.array$reporter_id <- paste(tf.array$reporter_id, tf.array$pA_ID, sep = "_")
+```
+
+
+# Generate BsaI recognition sites + overhangs  
+## Get overhangs from https://goldengate.neb.com/ -> golden gate utilities
+```{r}
+# I'll just take the same overhangs that I used in the previous ds approach because they worked well. Now, I only have 5 inserts, so I need to double check fidelities.
+## Import previously ordered sequences
+overhang.df <- read.csv("/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/mt20210106_TF_reporter_array_ds_twist_ordered.csv") %>% 
+  setnames(c("Name", "Insert.Sequence"), c("TF", "seq"))
+overhang.df <- overhang.df[-4,] %>%
+  mutate(TF = unique(tf.array$TF))
+
+## Isolate the unique overhangs and Bsa recognition sites 
+overhang_left <- overhang.df %>% 
+  dplyr::select(TF, seq) %>% 
+  mutate(seq = tolower(substr(seq, 1, 17))) %>%
+  setnames("seq", "overhang_left")
+overhang_right <- overhang.df %>% 
+  dplyr::select(TF, seq) %>% 
+  mutate(seq = tolower(substrRight(seq, 17))) %>%
+  setnames("seq", "overhang_right")
+
+tf.array <- Reduce(function(x, y) merge(x, y, all=TRUE), list(tf.array, overhang_left, overhang_right))
+
+## 5'-3' overhang for vector: "TACA"
+## 3'-5' overhang for vector: "TAGG"
+
+
+# Make barcodes suitable for TIDE readout -> different lengths, extract barcodes from previous approach
+overhang.df$barcodes <- gsub(".*CTTCCGATCT", "", overhang.df$seq)
+overhang.df$barcodes <- gsub("CATCGTCGCATC.*", "", overhang.df$barcodes)
+barcodes <- overhang.df %>% dplyr::select(barcodes, TF) 
+tf.array <- merge(barcodes, tf.array)
+```
+
+
+
+
+
+
+```{r}
+# Concatenate intermediate sequence
+tf.array$reporter <- toupper(paste(tf.array$motif1, 
+                           tf.array$Space1, tf.array$motif2, tf.array$Space2, tf.array$motif3, 
+                           tf.array$Space3, tf.array$motif4, tf.array$Distance_seq, tf.array$Promoter_sequence,
+                           tf.array$S1_primer, tf.array$barcodes, tf.array$bc_spacer,
+                           tf.array$RT_primer, tf.array$pA_seq,
+                           sep = ""))
+tf.array$reporter <- paste(tf.array$overhang_left, tf.array$reporter, tf.array$overhang_right, sep = "")
+tf.array_export <- tf.array %>% 
+  dplyr::select(TF, pA_ID, reporter) %>%
+  mutate(TF = paste(TF, pA_ID, sep = "_")) %>%
+  dplyr::select(-pA_ID)
+
+# Check length of sequences
+paste("Max length:", max(nchar(tf.array_export$reporter)), ", Min length:", 
+      min(nchar(tf.array_export$reporter)))
+
+# Check for BsaI restriction sites in sequence
+scan <- tf.array_export$reporter[grep("GAGACC|GGTCTC", tf.array_export$reporter)]
+paste("I found", length(scan), "BsaI sites")
+```
+
+
+
+
+
+
+## Reporter export
+```{r}
+# Export TF reporter sequences
+filename <- SetFileName("_tf-reporter-seq", "mt")
+setwd("/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/")
+write.csv(tf.array_export, file = paste(filename,".csv", sep = ""), row.names = F)
+```
+
+
+
+
+# Conclusions
+```{r}
+```
+
+## Exporting potential data. 
+```{r}
+```
+
+# Session Info
+```{r}
+paste("Run time: ",format(Sys.time()-StartTime))
+getwd()
+date()
+sessionInfo()
+```
+
