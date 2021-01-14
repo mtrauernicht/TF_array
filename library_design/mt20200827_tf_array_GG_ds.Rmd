@@ -226,7 +226,7 @@ get_pwm_feature_matrix <- function(motif_meta_fn, fimo_fn, db = 2) {
 
 ## Data import
 ```{r}
-tf.array <- read.csv("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/SuRE_TF_1/TF-reporter_library_design/output/mt20191205_tf-array.csv")
+tf.array <- read.csv("/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/mt20191205_tf-array.csv")
 ```
 
 
@@ -313,7 +313,7 @@ paste("Max length:", max(nchar(tf.array_export$reporter)), ", Min length:",
       min(nchar(tf.array_export$reporter)))
 
 # Check for BsaI restriction sites in sequence
-scan <- tf.array_export$reporter[grep("GGTCTC", tf.array_export$reporter)]
+scan <- tf.array_export$reporter[grep("CCAGAG|GGTCTC", tf.array_export$reporter)]
 paste("I found", length(scan), "BsaI sites")
 ```
 
@@ -351,11 +351,11 @@ paste("I found", length(scan), "BsaI sites")
 ```{r}
 # Export TF reporter sequences
 filename <- SetFileName("_tf-reporter-seq", "mt")
-setwd("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/SuRE_TF_1/TF-reporter_library_design/output/")
+setwd("/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/")
 write.csv(tf.array_export, file = paste(filename,".csv", sep = ""), row.names = F)
 
 filename <- SetFileName("_tf-reporter-scrambled", "mt")
-setwd("/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/SuRE_TF_1/TF-reporter_library_design/output/")
+setwd("/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/")
 write.csv(tf.scrambled_export, file = paste(filename,".csv", sep = ""), row.names = F)
 ```
 
