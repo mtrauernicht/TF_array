@@ -1,5 +1,5 @@
 ---
-title: "RSTP2 TIDE batch"
+title: "TF array TIDE batch"
 output:
   html_document: default
   pdf_document: default
@@ -13,7 +13,7 @@ library(knitr)
 Functions
 
 ```{r functions}
-import <- function(control_file, experimental_file, guide, seqstart, seqend, maxshift, rg1 = NA, rg2 = NA) {
+import <- function(control_file, experimental_file, guide, seqstart, seqend, array_length, rg1 = NA, rg2 = NA) {
   ##Arguments: 
   ##control_file (char) & experimental_file (char): Sanger chromatogram files (.ab1 or .scf) 
   ##   control is typically transfected with Cas9 but without guide seq
@@ -21,7 +21,7 @@ import <- function(control_file, experimental_file, guide, seqstart, seqend, max
   ## guide (char): 20 bp guide sequence that is recognized by the Cas9 
   ## seqstart (numeric): start of sequence read from where data will be included (because beginning of seq reads tends to be poor quality)
   ## seqend (numeric): last bp to be included in analysis (will be automatically adjusted if reads are shorter, see below)
-  ## maxshift (numeric): range of basepair shifts (indels) to be analyzed, both positive and negative
+  ## array_length (numeric): range of basepair shifts (indels) to be analyzed, both positive and negative
   ## rg1, rg2 (numeric): [optional] the first (rg1) and last (rg2) base of the sequence region that is used for decomposition; will be automatically set if NA
   ##   Note: rg1&rg2 should be after the breaksite (if not, this will be corrected)
   
@@ -94,17 +94,17 @@ import <- function(control_file, experimental_file, guide, seqstart, seqend, max
                "\n control sequence:", sequence_ctr))}
   
   #align the sample to the control sequence and calculate offset
-  if(seqstart>(breaksite-maxshift)){
+  if(seqstart>(breaksite-array_length)){
     stop(paste("the breaksite (",breaksite,") is too close to the start of the sequence read -> If possible set start of sequence read lower.
                The sequence start of sequence read is maximal n bp breaksite - n bp of the chosen indel size range."))}
   
   #get the sequence interval on which the alignment should be based:
-  if((nchar(sequence_ctr) < ((breaksite-maxshift)-seqstart)) | (nchar(sequence_mut) < ((breaksite-maxshift)-seqstart)))
+  if((nchar(sequence_ctr) < ((breaksite-array_length)-seqstart)) | (nchar(sequence_mut) < ((breaksite-array_length)-seqstart)))
   {
     stop(paste("(one of) the sequence run(s) is too short for proper alignment"))}
   
-  seq_ctr <- substr(sequence_ctr, seqstart, breaksite-maxshift)
-  seq_mut <- substr(sequence_mut, seqstart, breaksite-maxshift)
+  seq_ctr <- substr(sequence_ctr, seqstart, breaksite-array_length)
+  seq_mut <- substr(sequence_mut, seqstart, breaksite-array_length)
   align_seq <- pairwiseAlignment(pattern = seq_mut, subject = seq_ctr, type = "local")
   if(align_seq@score<10){
     stop("there is no good alignment found between the control amd test sample -> 
@@ -140,18 +140,18 @@ import <- function(control_file, experimental_file, guide, seqstart, seqend, max
   colnames(peak_mut_height)<-B
   
   #set rg1 and rg2, if not provided by user:
-  rg1<-ifelse(is.na(rg1), breaksite+maxshift+5, rg1)
-  rg2<-ifelse(is.na(rg2), seqend-maxshift-5, rg2)
+  rg1<-ifelse(is.na(rg1), breaksite+array_length+5, rg1)
+  rg2<-ifelse(is.na(rg2), seqend-array_length-5, rg2)
   
   #check if rg1 and rg2 are within meaningful range: 
-  if(rg1< breaksite+maxshift+5) {
-    rg1<- breaksite+maxshift+5
+  if(rg1< breaksite+array_length+5) {
+    rg1<- breaksite+array_length+5
     warning(paste("left boundary of decomposition window was adjusted", rg1, 
                   "It must be at least 5bp plus the maximum indel size downstream of the expected break site"))
   }
   
-  if(rg2 > seqend-maxshift-5) {
-    rg2<- seqend-maxshift-5
+  if(rg2 > seqend-array_length-5) {
+    rg2<- seqend-array_length-5
     warning(paste("right boundary of decomposition window was adjusted to",rg2,
                   "It cannot be more than the length of the shortest sequence read minus the maximum indel size minus 5bp."))
   }
@@ -162,7 +162,7 @@ import <- function(control_file, experimental_file, guide, seqstart, seqend, max
                   "It cannot be more than the length of the shortest sequence read minus the maximum indel size minus 5bp."))
   }
   
-  if(rg2<rg1+maxshift*2) {
+  if(rg2<rg1+array_length*2) {
     stop(paste("boundaries of decomposed region are not acceptable -> 
                Set boundaries further apart or use smaller indel size if possible. 
                Maximum decomposition window spans from 5bp + n bp indel size range downstream of the break to 5bp + n bp indel size from the end of the shortest sequence read"))}
@@ -215,7 +215,7 @@ import <- function(control_file, experimental_file, guide, seqstart, seqend, max
     mut=peak_mut_height, 
     seqstart=seqstart,
     seqend=seqend,
-    maxshift=maxshift,
+    array_length=array_length,
     rg1=rg1,
     rg2=rg2,
     breaksite=breaksite,
@@ -230,8 +230,8 @@ quality <- function(import) {
   ## import$breaksite = site the crispr-guide is supposed to break according to literature (3 bp before the PAM sequence)
   ## import$seqstart = start of sequence read from where data will be included (because beginning of seq reads tends to be poor quality)
   ## import$seqend = last bp to be included in analysis (will be automatically adjusted if reads are shorter, see below)
-  ## import$maxshift = which basepair shifts (indels) you want to know the percentage of.
-  ##   Note: import$maxshift is the number to one direction, in the calculation it determines the shift to both direction (deletion & insertion) 
+  ## import$array_length = which basepair shifts (indels) you want to know the percentage of.
+  ##   Note: import$array_length is the number to one direction, in the calculation it determines the shift to both direction (deletion & insertion) 
   ## import$rg1/import$rg2 = the sequence trace that is used for decomposition
   ##   Note: rg1&rg2 should be always after the breaksite
   # import$offset_mut = the offset that seuquence trace of the sample has with repect to the control sequence trace.
@@ -302,8 +302,8 @@ decomposition <- function(import, plottitle,  p.threshold = 0.001) {
   ## All the arguments are generated in the function 'TIDE_import', except p.threshold
   ## import$ctr = peakheigths of the control sample (e.g. transfected CRISPR without guide seq)
   ## import$mut = peakheigths of the sample that have had a DSB/repair
-  ## import$maxshift = size range of indels to be considered in the decomposition.
-  ##   Note: calculation is always done in both directions, i.e. for both deletions and insertions of sizes 0:maxshift 
+  ## import$array_length = size range of indels to be considered in the decomposition.
+  ##   Note: calculation is always done in both directions, i.e. for both deletions and insertions of sizes 0:array_length 
   ## import$rg1 = first base in the sequence sequence traces that is used for decomposition
   ## import$rg2 = last base in the sequence sequence traces that is used for decomposition
   ##   Note: rg1&rg2 should be always after the breaksite
@@ -316,7 +316,7 @@ decomposition <- function(import, plottitle,  p.threshold = 0.001) {
   require("colorspace")
   require("nnls")
   
-  shiftrange<-c(-import$maxshift: import$maxshift) 
+  shiftrange<-c(-0: import$array_length) 
   
   #decomposite import$mut sequence data into indel combinations, 
   #separately for each base in c("A","C","G","T"). Stack up the data for the four bases in one aggragation matrix
@@ -325,7 +325,7 @@ decomposition <- function(import, plottitle,  p.threshold = 0.001) {
   
   for(b in import$B) #loop through four bases
   {#simulate sequencing peak data for all hypothesized indels from control peaks:
-    sim <- matrix(NA, nrow=import$rg2-import$rg1+1, ncol=import$maxshift*2+1)
+    sim <- matrix(NA, nrow=import$rg2-import$rg1+1, ncol=import$array_length+1)
     colnames(sim)<-shiftrange
     for(i in shiftrange) {sim[,as.character(i)] <- import$ctr[(import$rg1:import$rg2)-i,b]}
     I_matrix <- rbind(I_matrix, sim)
@@ -337,7 +337,7 @@ decomposition <- function(import, plottitle,  p.threshold = 0.001) {
   
   ## pvalue calculation (source: https://www.princeton.edu/~slynch/soc504/mult_reg2.pdf)
   #standard error:
-  se <- sqrt(diag((sum((NNFIT$fitted-I_vec)^2)/(nrow(I_matrix)-(import$maxshift*2+1)))*solve(t(I_matrix)%*%I_matrix)));
+  se <- sqrt(diag((sum((NNFIT$fitted-I_vec)^2)/(nrow(I_matrix)-(import$array_length*2+1)))*solve(t(I_matrix)%*%I_matrix)));
   
   #p-value:
   pv <- 2*pnorm(-abs(NNFIT$x/se))
@@ -346,39 +346,35 @@ decomposition <- function(import, plottitle,  p.threshold = 0.001) {
   Rsq <- cor(NNFIT$fit,I_vec)^2
   
   #components in percentages:
-  comper<-(Rsq*100*(NNFIT$x/sum(NNFIT$x)))
+  comper<-100*(NNFIT$x/sum(NNFIT$x))
   
-  COL <- ifelse(pv<p.threshold,"red","black")
-  COL[import$maxshift+1] <- ifelse(pv[import$maxshift+1]<p.threshold,"#FF000080","black")
+  
+  COL <- c("#373930", "#433C38", "#4C4A45", "#525D51", "#A1B0AB")
   plttit <- plottitle
   #plot decomposition graph              
-  bp <- barplot(comper, 
+  bp <- barplot(comper,
                 col=COL, 
                 border = COL, 
-                names.arg=shiftrange, 
-                ylim=c(0, max(comper+10)), 
-                xlab="<--deletion     insertion-->", 
+                names.arg = reporter_names,
                 ylab="% of sequences",  
-                main = plttit ,
-                xaxt='n')
+                xlab = c("TF reporters"),
+                ylim=c(0, 100), 
+                main = plttit)
   
   #make x-axis 
-  a <- min(ceiling(shiftrange/5)*5)
-  p <- pretty (c(a:-a), n=(round((length(shiftrange)-1)/5,0)-1))
-  axis(1,at=bp[p+max(p)+1+a+max(shiftrange)],labels=p)
+  # a <- min(ceiling(shiftrange/5)*5)
+  # p <- pretty (c(a:-a), n=(round((length(shiftrange)-1)/5,0)-1))
+  # axis(1,at=bp[p+max(p)+1+a+max(shiftrange)],labels=p)
   
   
   
   
   #above each group of bars: show percentage (mean across four bases)
-  if(length(bp[pv<p.threshold]) > 0)
-  {  
-    text(bp[pv<p.threshold], (comper+5)[pv<p.threshold], as.character(((round(comper,1))[pv<p.threshold])))
-  }  
+  text(bp, (comper+3), as.character(((round(comper,1)))))
   #display Rsq values as an indication of the accuracy:
-  legend("topright",legend=as.expression(c(bquote(p < .(p.threshold)), bquote(p >= .(p.threshold)))), title= as.expression(bquote(R^2 == .(round(Rsq,2)))), pch=15, col=c("red",'black'), bty="n")
-  eff <- round((Rsq*100) - comper[import$maxshift+1],1)
-  cat("overall efficiency =", eff, "%\n")
+  # legend("topright",legend=as.expression(c(bquote(p < .(p.threshold)), bquote(p >= .(p.threshold)))), title= as.expression(bquote(R^2 == .(round(Rsq,2)))), pch=15, col=c("red",'black'), bty="n")
+  # eff <- round((Rsq*100) - comper[import$array_length+1],1)
+  # cat("overall efficiency =", eff, "%\n")
   
   decomp.summary <- data.frame(percentage = round(comper,1), pvalue = signif(pv,2))
   rownames(decomp.summary) <- shiftrange
@@ -401,8 +397,8 @@ insertion <- function(import, decomposition) {
   ## import$breaksite = site the crispr-guide is supposed to break according to literature (3 bp before the PAM sequence)
   ## import$seqstart = start of sequence read from where data will be included (because beginning of seq reads tends to be poor quality)
   ## import$seqend = last bp to be included in analysis (will be automatically adjusted if reads are shorter, see below)
-  ## import$maxshift = which basepair shifts (indels) you want to know the percentage of.
-  ##   Note: maxshift is the number to one direction, in the calculation it determines the shift to both direction (deletion & insertion) 
+  ## import$array_length = which basepair shifts (indels) you want to know the percentage of.
+  ##   Note: array_length is the number to one direction, in the calculation it determines the shift to both direction (deletion & insertion) 
   ## import$rg1/import$rg2 = the sequence trace that is used for decomposition
   ##   Note: rg1&rg2 should be always after the breaksite
   ## import$offset_mut = the offset that seuquence trace of the sample has with repect to the control sequence trace.
@@ -418,7 +414,7 @@ insertion <- function(import, decomposition) {
   if(length(decomposition$bp[decomposition$pv<decomposition$p.threshold])==0){stop("no insertions")}
   if(length(decomposition$bp[decomposition$pv<decomposition$p.threshold]) > 0)
   {
-    SigShift <- which(decomposition$pv<decomposition$p.threshold)-import$maxshift-1; 
+    SigShift <- which(decomposition$pv<decomposition$p.threshold)-import$array_length-1; 
     #what are the corresponding percentages of the significant peaks
     PerShift <- decomposition$NNFIT$x[which(decomposition$pv<decomposition$p.threshold)];
     names(PerShift) <- SigShift;
@@ -499,44 +495,28 @@ insertion <- function(import, decomposition) {
 
 Define the arguments: 
 ```{r}
-ref.file <- "/DATA/usr/m.trauernicht/projects/TF_array/data/TIDE/E1274_1/mt20201002_seq_2.txt"
-output.file <- "/DATA/usr/m.trauernicht/projects/TF_array/data/TIDE/E1274_1/mt20201002_TIDE_2.pdf"
-folder <- "/DATA/usr/m.trauernicht/projects/TF_array/data/TIDE/E1274_1/"
-seqstart = 1
-seqend = 100
-maxshift = 6
-
-
+ref.file <- "/DATA/usr/m.trauernicht/projects/TF_array/data/TIDE/E1485_20210401/mt20210401_seq.txt"
+output.file <- "/DATA/usr/m.trauernicht/projects/TF_array/data/TIDE/E1485_20210401/mt20210401_TIDE.pdf"
+folder <- "/DATA/usr/m.trauernicht/projects/TF_array/data/TIDE/E1485_20210401/"
+reporter_names <- c("NFYA", "Random", "TCF7", "STAT3", "NRF2")
+seqstart = 5
+seqend = 80
+array_length = 4
 ```
 
 
 Run Batch
 ```{r}
 table <- read.table(ref.file)
-pdf(output.file, width = 11, height = 8)
-par(mfrow=c(2,2))
+pdf(output.file, width = 11, height = 10)
+par(mfrow=c(3,3))
 plot_list = apply(table, 1, function(x){
   print(x[1])
   x[1:2] = paste0(folder, x[1:2])
-  imp = import(x[1], x[2], x[3], seqstart, seqend, maxshift)
-  p_qual = quality(imp)
+  imp = import(x[1], x[2], x[3], seqstart, seqend, array_length)
+  #p_qual = quality(imp)
   p_comp = decomposition(imp, x[4])
-  return(p_qual)
-  return(p_comp)
-})
-dev.off()
-```
-
-Only indel plots 
-```{r}
-table <- read.table(ref.file)
-pdf(output.file, width = 11, height = 8)
-par(mfrow=c(3,2))
-plot_list = apply(table, 1, function(x){
-  print(x[1])
-  x[1:2] = paste0(folder, x[1:2])
-  imp = import(x[1], x[2], x[3])
-  p_comp = decomposition(imp, x[4])
+  #return(p_qual)
   return(p_comp)
 })
 dev.off()
