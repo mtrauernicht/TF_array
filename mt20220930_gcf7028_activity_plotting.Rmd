@@ -1,0 +1,536 @@
+---
+title: "TF array activity plotting (gcf6715)"
+author: 
+  - name: "Max Trauernicht"
+    email: "m.trauernicht@nki.nl"
+    affiliation: "Netherlands Cancer Institute - van Steensel lab"
+date: '`r format(Sys.time(), "%d/%m/%Y")`'
+output: 
+  html_document:
+    theme: united
+    highlight: pygments
+    fig_caption: yes
+    code_folding: hide
+    df_print: kable
+    toc: true
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+---
+
+---
+
+### Aim
+I received sequencing data from TF arrays that consist of 5 different TF reporters. I want to analyze here if the measured barcode counts make any sense. 
+
+---
+
+## Setup {.tabset}
+
+<!-- little HTML script to do indentation of the table of contents -->
+<script>
+    $(document).ready(function() {
+      $items = $('div#TOC li');
+      $items.each(function(idx) {
+        num_ul = $(this).parentsUntil('#TOC').length;
+        $(this).css({'text-indent': num_ul * 10, 'padding-left': 0});
+      });
+
+    });
+</script>
+
+```{css, echo = FALSE}
+div.sourceCode {
+  overflow-x: hidden;
+}
+```
+
+
+
+### Libraries
+
+```{r setup, out.width= "80%", fig.align= "center", echo=FALSE, warning= FALSE, message=FALSE}
+# Path, Libraries, Parameters and Useful Functions
+knitr::opts_chunk$set(echo = TRUE)
+StartTime <-Sys.time()
+
+# 8-digit Date tag:
+Date <- substr(gsub("-","",Sys.time()),1,8) 
+# libraries:
+library(blogdown)
+library(ggplot2)
+library(data.table)
+library(dplyr)
+library(rstatix)
+library(stringr)
+library(ggpubr)
+library(plyr)
+library(pheatmap)
+library(tidyverse)
+```
+
+### Functions
+
+```{r, out.width= "80%", fig.align= "center", echo=FALSE, warning= FALSE, message=FALSE}
+# Custom functions
+SetFileName <- function(filename, initials) {
+  # Set filename with extension and initials to make filename with date integrated.
+  filename <- substitute(filename)
+  initials <- substitute(initials)
+  filename <- paste0(initials, Date, filename)
+  filename
+}
+
+# Custom ggplot2 themes
+theme_classic_lines <- function() {
+  theme_pubr(border = T, legend = "top") +
+            theme(panel.grid.major = element_line(colour = "#adb5bd", size = 0.1),
+                  strip.background = element_rect(fill = "#ced4da")
+            )
+}
+
+theme_classic_lines_45 <- function() {
+  theme_pubr(border = T, legend = "top", x.text.angle = 45) +
+            theme(panel.grid.major = element_line(colour = "#adb5bd", size = 0.1),
+                  strip.background = element_rect(fill = "#ced4da")
+            )
+}
+
+theme_classic_lines_90 <- function() {
+  theme_pubr(border = T,  legend = "top", x.text.angle = 90) +
+            theme(panel.grid.major = element_line(colour = "#adb5bd", size = 0.1),
+                  strip.background = element_rect(fill = "#ced4da")
+            )
+}
+
+theme_set(theme_classic_lines())
+
+colors_diverse <- c("#264653", "#9AC1AE", "#5D987B", "#f2cc8f", "#e76f51")
+
+ggplot_custom <- function(...) ggplot2::ggplot(...) + 
+  scale_color_manual(values = colors_diverse) + 
+  scale_fill_manual(values = colors_diverse)
+```
+
+
+
+### Import sequencing data 
+
+```{r}
+# Import barcode counts per condition - gcf6882
+bc_files = list.files('/DATA/usr/m.trauernicht/projects/TF_array/data/gcf6882_TF_array_integrated_rep2/results/',
+                       full.names=T, patter='*_counts.tsv')
+bc_list <- lapply(bc_files, fread, header = FALSE)
+names(bc_list)<- gsub('.*//6882_[0-9]{1,2}_(.*?)_[CGAT]{6}.*_counts.tsv', 
+                                    '\\1', 
+                                    bc_files)
+
+# Import barcode counts per condition - gcf6715
+bc_files2 = list.files('/DATA/usr/m.trauernicht/projects/TF_array/data/gcf6715_TF_array_integrated/results/',
+                       full.names=T, patter='*_counts.tsv')
+bc_list2 <- lapply(bc_files2, fread, header = FALSE)
+names(bc_list2)<- gsub('.*//6715_[0-9]{1,2}_(.*?)_[CGAT]{6}.*_counts.tsv', 
+                                    '\\1', 
+                                    bc_files2)
+
+# Import barcode counts per condition - gcf6715
+bc_files3 = list.files('/DATA/usr/m.trauernicht/projects/TF_array/data/gcf7028_TF_array_integrated_rep3/results/',
+                       full.names=T, patter='*_counts.tsv')
+bc_list3 <- lapply(bc_files3, fread, header = FALSE)
+names(bc_list3)<- gsub('.*//7028_[0-9]{1,2}_(.*?)_[CGAT]{6}.*_counts.tsv', 
+                                    '\\1', 
+                                    bc_files3)
+bc_list <- c(bc_list, bc_list2, bc_list3)
+
+
+# Import barcode annotation
+bc_annotation <- read.csv2("~/projects/TF_array/data/gcf6413_TFarrayseq/TF_barcode_association.csv")
+
+# Import metadata
+metadata_df <- read.csv2('~/projects/TF_array/data/gcf7028_TF_array_integrated_rep3/metadata_gcf7028.csv')
+```
+
+### Organize sequencing data
+
+```{r}
+# Generate long dfs
+for (i in 1:length(bc_list)) {
+  if (i == 1) {
+  bc_df <- data.frame(bc_list[i])
+  bc_df[3] <- names(bc_list[i])
+  names(bc_df) <- c("barcode", "count", "name")
+  bc_df <- reshape2::dcast(bc_df, barcode ~ name, value.var = "count")
+  }
+  else {
+  bc_df_i <- data.frame(bc_list[i])
+  bc_df_i[3] <- names(bc_list[i])
+  names(bc_df_i) <- c("barcode", "count", "name")
+  bc_df_i <- reshape2::dcast(bc_df_i, barcode ~ name, value.var = "count")
+  bc_df <- merge(bc_df, bc_df_i, all = T)
+  }
+}
+
+# Only keep designed barcodes
+bc_df <- bc_df[bc_df$barcode %in% bc_annotation$barcode,]
+
+# Add TF data
+bc_df <- merge(bc_df, bc_annotation)
+
+
+# Convert to long df
+bc_df_long <- melt(bc_df, id.vars = c("barcode", "TF"),
+              variable.name = "name", value.name = "counts", as.is = T)
+
+# Compute reads per million to estimate the relative counts in their respective sample
+for (i in unique(bc_df_long$name)) {
+  bc_df_long$rpm[bc_df_long$name == i] <- bc_df_long$counts[bc_df_long$name == i]  / # Pseudocount not needed here
+    (sum(bc_df_long$counts[bc_df_long$name == i]) / 1e6)
+}
+
+# Add metadata
+bc_df_long <- merge(bc_df_long, metadata_df, by = "name")
+
+# Normalize counts by dividing by pDNA counts
+background <- bc_df_long %>%
+  filter(TF == "Random") %>%
+  dplyr::select(plasmid, name, 'background' = rpm) %>%
+  mutate(background = ave(background, name, plasmid, FUN = function(x) mean(x))) %>%
+  unique()
+
+bc_df_long <- merge(bc_df_long, background, by = c("plasmid", "name"), all = T)
+bc_df_long$activity <- bc_df_long$rpm / bc_df_long$background
+
+bc_df_long <- bc_df_long %>%
+  distinct(plasmid, TF, condition, sample, activity, rpm, rep) %>%
+  mutate(mean_activity = ave(activity, condition, plasmid, TF, FUN = mean)) %>%
+  mutate(sample_id = paste(sample, rep, sep = "_"))
+```
+
+
+
+## Reads per TF reporter
+How active are the reporters (unnormalized)?
+```{r,  warning= FALSE}
+# Plot all data
+bc_df_long$TF <- factor(bc_df_long$TF, levels = c("NFE2L2", "TCF7L2", "STAT3", "Random", "NFYA"))
+
+ggplot(bc_df_long %>%
+         mutate(sample_id = gsub("pMT[0-9]{2}_(.*)", "\\1", sample_id)), 
+       aes(x = TF, y = rpm)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  facet_grid(plasmid ~ sample_id) +
+  coord_flip()
+```
+Conclusion: pMT23 and pMT24 seem to give trustworthy activities. The random background is the lowest in pMT24 and specific activations make most sense in pMT24. 
+
+## Normalized activities of TF reporters
+How active are the TF reporters per design compared to the negative control?
+```{r, warning= FALSE}
+# Include data from previous MPRA
+# Specify the chosen reporters
+selection_df <- data.frame(TF = c("Random1","Stat3","Tcf7l2","Nfya", "Nfe2l2"),
+                           Spacing = c("5bp", "10bp", "5bp", "5bp", "5bp"),
+                           Distance = c("10bp", "10bp", "10bp", "10bp", "10bp"),
+                           Promoter = c("mCMV", "mCMV", "mCMV", "mCMV", "mCMV"),
+                           Background = c("1", "3", "3", "2", "3"))
+selection_df <- selection_df %>%
+  mutate(reporter_id = paste(TF, Spacing, Distance, Promoter, Background, sep = "_"))
+
+
+# Import MPRA data
+cDNA_df <- read.csv("/DATA/shared/projects/TF_REPORTERS/SuRE-TF/data/gcf6139_stimulation-2/results/mt20201209_reporter_activity_filt.csv", header = T)
+cDNA_df_1 <- read.csv("/DATA/shared/projects/TF_REPORTERS/SuRE-TF/data/gcf5927_stimulation-1/results/mt20201209_reporter_activity_filt.csv", header = T)
+cDNA_df_1 <- cDNA_df_1 %>% setnames(c("background", "promoter", 
+                                      "spacing", "distance", "bc.number"),
+                                    c("Background", "Promoter", "Spacing", 
+                                      "Distance", "Barcode"))
+cDNA_df <- rbind(cDNA_df, cDNA_df_1)
+
+
+cDNA_df_filt <- cDNA_df %>%
+  mutate(reporter_id = paste(TF, Spacing, Distance, Promoter, Background, sep = "_")) %>%
+  filter(reporter_id %in% selection_df$reporter_id,
+         Barcode == 4) %>% # reporter activity is the mean of the barcodes, so the choice of the barcode doesn't matter here
+  dplyr::select(condition, TF, 'mean_activity' = reporter_activity) %>%
+  mutate(plasmid = "MPRA") %>%
+  filter(condition %in% c("HQ", "2i_pos_LIF", "2i_neg_LIF", "LIF_pos_PD")) %>%
+  unique()
+
+cDNA_df_filt$condition[cDNA_df_filt$condition == "LIF_pos_PD"] <- "LIF_PD"
+cDNA_df_filt$condition[cDNA_df_filt$condition == "2i_pos_LIF"] <- "2i_LIF"
+cDNA_df_filt$condition[cDNA_df_filt$condition == "2i_neg_LIF"] <- "2i"
+cDNA_df_filt$TF <- toupper(cDNA_df_filt$TF)
+cDNA_df_filt$TF[cDNA_df_filt$TF == "RANDOM1"] <- "Random"
+
+
+background <- cDNA_df_filt %>%
+  filter(TF == "Random") %>%
+  dplyr::select(plasmid, condition, 'background' = mean_activity) %>%
+  mutate(background = ave(background, condition, plasmid, FUN = function(x) mean(x))) %>%
+  unique()
+
+cDNA_df_filt <- merge(cDNA_df_filt, background, all = T)
+cDNA_df_filt$mean_activity <- cDNA_df_filt$mean_activity / cDNA_df_filt$background
+
+cDNA_df_filt <- cDNA_df_filt %>%
+  dplyr::select(-background) 
+
+bc_df_long <- rbind.fill(bc_df_long, cDNA_df_filt)
+
+bc_df_long$plasmid <- factor(bc_df_long$plasmid, levels = c("pMT22", "pMT23", "pMT24", "MPRA"))
+
+ggplot(bc_df_long %>%
+         filter(TF != "Random") %>%
+         mutate(TF = factor(TF, levels = c("NFE2L2", "TCF7L2", "STAT3", "NFYA"))) %>%
+         mutate(mean_activity = log2(mean_activity)), 
+       aes(x = TF, y = mean_activity, fill = mean_activity)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient2(midpoint = 0, low = "blue", mid = "grey",
+                            high = "red", space = "Lab" ) +
+  facet_grid(plasmid ~ condition) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylab("log2 activity relative to random reporter") +
+  coord_flip()
+
+ggplot(bc_df_long %>%
+         mutate(sample_id = gsub("pMT[0-9]{2}_(.*)", "\\1", sample_id)) %>%
+         filter(TF != "Random") %>%
+         mutate(TF = factor(TF, levels = c("NFE2L2", "TCF7L2", "STAT3", "NFYA"))) %>%
+         mutate(activity = log2(activity)), 
+       aes(x = TF, y = activity, fill = activity)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient2(midpoint = 0, low = "blue", mid = "grey",
+                            high = "red", space = "Lab" ) +
+  facet_grid(plasmid ~ sample_id) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylab("log2 activity relative to random reporter") +
+  coord_flip()
+
+
+bc_df_long$TF <- factor(bc_df_long$TF, levels = c("NFYA", "Random", "TCF7L2", "STAT3", "NFE2L2"))
+
+ggplot(bc_df_long %>%
+         filter(plasmid %in% c("pMT24", "MPRA")) %>%
+         filter(condition %in% c("2i_LIF", "LIF_PD", "2i")) %>%
+         filter(TF != "Random") %>%
+         mutate(mean_activity = log2(mean_activity)), 
+       aes(x = TF, y = mean_activity, fill = mean_activity)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_gradient2(midpoint = 0, low = "#3d405b", mid = "#e5e5e5",
+                            high = "#e07a5f", space = "Lab" ) +
+  facet_grid(plasmid ~ condition) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylab("log2 activity relative to random reporter") +
+  theme_classic_lines()
+
+bc_df_long$rep[bc_df_long$plasmid == "MPRA"] <- "MPRA"
+bc_df_long$activity[bc_df_long$plasmid == "MPRA"] <- bc_df_long$mean_activity[bc_df_long$plasmid == "MPRA"]
+ggplot(bc_df_long %>%
+         filter(plasmid %in% c("pMT24", "MPRA")) %>%
+         filter(condition %in% c("2i_LIF", "LIF_PD", "2i")) %>%
+         filter(TF != "Random") %>%
+         mutate(activity = log2(activity)), 
+       aes(x = TF, y = activity, fill = activity)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_gradient2(midpoint = 0, low = "#3d405b", mid = "#e5e5e5",
+                            high = "#e07a5f", space = "Lab" ) +
+  facet_grid(rep ~ condition) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylab("log2 activity relative to random reporter") +
+  theme_classic_lines()
+
+## Time courses
+ggplot(bc_df_long %>%
+         filter(rep > 3) %>%
+         filter(condition %in% c("2i_LIF", "2i", "2i_2h", "2i_4h")) %>%
+         mutate(condition = factor(condition, levels = c("2i_LIF", "2i_2h", "2i_4h", "2i"))) %>%
+         filter(TF == "STAT3") %>%
+         mutate(mean_activity = log2(ave(activity, condition, FUN = mean))) %>%
+         distinct(condition, mean_activity), 
+       aes(x = condition, y = mean_activity, fill = mean_activity)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient2(midpoint = 0, low = "#3d405b", mid = "#e5e5e5",
+                            high = "#e07a5f", space = "Lab" ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylab("log2 activity relative to random reporter") +
+  theme_classic_lines()
+
+ggplot(bc_df_long %>%
+         filter(rep > 3) %>%
+         filter(condition %in% c("2i_LIF", "LIF_PD", "LIF_PD_2h", "LIF_PD_4h")) %>%
+         mutate(condition = factor(condition, levels = c("2i_LIF", "LIF_PD_2h", "LIF_PD_4h", "LIF_PD"))) %>%
+         filter(TF == "TCF7L2") %>%
+         mutate(mean_activity = log2(ave(activity, condition, FUN = mean))) %>%
+         distinct(condition, mean_activity), 
+       aes(x = condition, y = mean_activity, fill = mean_activity)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient2(midpoint = 0, low = "#3d405b", mid = "#e5e5e5",
+                            high = "#e07a5f", space = "Lab" ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  ylab("log2 activity relative to random reporter") +
+  theme_classic_lines()
+
+
+
+
+
+mpra_df <- bc_df_long %>%
+  filter(plasmid == "MPRA") %>%
+  distinct(activity, condition, TF) %>%
+  setnames("activity", "mpra_activity")
+
+bc_df_long2 <- merge(bc_df_long, mpra_df) %>%
+  filter(str_detect(plasmid, "MPRA", negate = T))
+```
+Conclusion: The pMT24 reporter activies seem to overlap the MPRA reporter activities surprisingly well, even though there are some differences. Can we characterize these differences better?
+
+## Investigate differences between pMT24 and MPRA reporter activities
+Which TFs are more active in pMT24/MPRA and what could be an explanation for this?
+```{r, warning= FALSE}
+ggplot(bc_df_long2 %>%
+         filter(str_detect(TF, "Random", negate = T)),
+       aes(x = log2(mpra_activity), y = log2(activity))) +
+  geom_point() +
+  geom_abline(lty = "twodash") +
+  geom_smooth(method = "lm", se = F) +
+  xlab("mpra activity (log2)") +
+  ylab("array activity (log2)") +
+  facet_wrap(~plasmid)
+
+ggplot(bc_df_long2 %>%
+         filter(str_detect(TF, "Random", negate = T), plasmid == "pMT22", condition == "2i_LIF"),
+       aes(x = log2(mpra_activity), y = log2(activity))) +
+  geom_point() +
+  geom_abline(lty = "twodash") +
+  geom_smooth(method = "lm", se = F) +
+  xlab("mpra activity (log2)") +
+  ylab("array activity (log2)")
+
+ggplot_custom(bc_df_long2 %>%
+                filter(plasmid == "pMT24") %>%
+                filter(str_detect(TF, "Random", negate = T)),
+       aes(x = log2(mpra_activity), y = log2(activity))) +
+  #geom_smooth(method = "lm", se = F, color = "grey50") +
+  geom_point(aes(color = TF), size = 2) +
+  geom_abline(lty = "twodash") +
+  geom_abline(lty = "twodash", intercept = 1, color = "red", alpha = 0.4) +
+  geom_abline(lty = "twodash", intercept = -1, color = "red", alpha = 0.4) +
+  geom_hline(yintercept = 0, alpha = 0.4) +
+  geom_vline(xintercept = 0, alpha = 0.4) +
+  xlab("mpra activity (log2)") +
+  ylab("pMT24 activity (log2)") +
+  facet_wrap(~condition)
+
+
+# Explore differences between pMT24 and MPRA data
+bc_df_long2$TF <- factor(bc_df_long2$TF, levels = c("NFYA", "Random", "TCF7L2", "STAT3", "NFE2L2"))
+
+for (i in unique(bc_df_long2$plasmid)) {
+  p <- ggplot(bc_df_long2 %>%
+                filter(plasmid == i) %>%
+         filter(str_detect(TF, "Random", negate = T))) +
+  geom_bar(stat = "identity", aes(y = log2(activity), x = TF), fill = colors_diverse[1]) +
+  geom_bar(stat = "identity", aes(y = log2(mpra_activity), x = TF), fill = colors_diverse[2], alpha = 0.6) +
+  facet_wrap(~condition) +
+  theme_classic_lines_45() +
+  geom_hline(yintercept = 0) +
+  xlab("TF reporters in the correct order") +
+  ylab("TF array activity (black) & MPRA activity (green)") +
+    ggtitle(paste("TF array design:", i))
+  
+  print(p)
+}
+
+bc_df_long3 <- bc_df_long %>%
+  spread(plasmid, activity) %>%
+  mutate(tf_condition = paste(TF, condition, sep = "_")) %>%
+  dplyr::select(-TF, -condition)
+
+x <- cor(bc_df_long3 %>% column_to_rownames("tf_condition"), method = "spearman", use = "pairwise.complete.obs")
+  
+pheatmap(x, 
+         border = F,
+         cellwidth = 12,
+         cellheight = 12,
+         color = colorRampPalette(c("#3d405b", "#e5e5e5", "#e07a5f"))(100))
+
+```
+Conclusion: There are still some (large) differences between the array and the MPRA reporter activities, but this is to some extent to be expected because of the different nature of the techniques. Integrated reporters might simply have a different reporter activity than plasmid reporters. The most intriguing differences are: 1) NFE2L2 is more active in pMT24 when unstimulated (2i and 2i+LIF) - why is this? Technical issue? 2) TCF7L2 is far more active in 2i in the genome. However, it is known that TCF7L2 is upregulated upon LIF removal (Dunn et al., 2014, Science) and loses its repressive action. I need to look into this more. 
+
+## Correlation between TIDE and sequencing
+Can we use only TIDE to infer TF activity?
+```{r, warning= FALSE}
+# Include data from same cDNA quantified by TIDE
+tide_activities <- read.csv2("~/projects/TF_array/data/TIDE/E1704_20211223/activity_summary.csv") %>%
+  dplyr::select(condition, "tide_activity" = activity, TF) %>%
+  filter(condition != "gDNA_ctrl") %>%
+  mutate(plasmid = gsub("(^[2-4]{2})_.*", "pMT\\1", condition)) %>%
+  mutate(condition = gsub("^[2-4]{2}_(.*)", "\\1", condition))
+
+bc_df_long <- merge(bc_df_long, tide_activities, all = T)
+
+random_tide <- bc_df_long %>%
+  filter(TF == "Random") %>%
+  dplyr::select(plasmid, condition, 'tide_random' = tide_activity) %>%
+  na.omit()
+
+bc_df_long <- merge(bc_df_long, random_tide, all = T) %>%
+  mutate(tide_activity = as.numeric(tide_activity)) %>%
+  mutate(tide_random = as.numeric(tide_random)) %>%
+  mutate(tide_activity = tide_activity/tide_random) %>%
+  dplyr::select(-tide_random)
+
+ggplot(bc_df_long %>%
+         filter(str_detect(TF, "Random", negate = T)),
+       aes(x = log2(tide_activity), y = log2(activity))) +
+  geom_point() +
+  facet_wrap(~plasmid) +
+  geom_abline(lty = "twodash") +
+  geom_smooth(method = "lm") +
+  xlab("TIDE activity (log2)") +
+  ylab("array activity (log2)")
+
+
+# Correlation between TIDE activity (pMT24) and MPRA data
+tide_df <- bc_df_long %>%
+  filter(plasmid == "MPRA") %>%
+  distinct(condition, TF, activity)
+
+tide_activities_df <- bc_df_long %>%
+  filter(plasmid == "pMT24") %>%
+  distinct(condition, TF, tide_activity)
+
+tide_activities_df <- merge(tide_activities_df, tide_df)
+
+ggplot(tide_activities_df %>%
+         filter(str_detect(TF, "Random", negate = T)),
+       aes(x = log2(tide_activity), y = log2(activity))) +
+  geom_point() +
+  geom_abline(lty = "twodash") +
+  geom_smooth(method = "lm") +
+  xlab("TIDE activity (log2)") +
+  ylab("array activity (log2)") +
+  facet_wrap(~condition)
+
+ggplot(tide_activities_df %>%
+         filter(str_detect(TF, "Random", negate = T), condition == "2i_LIF"),
+       aes(x = log2(tide_activity), y = log2(activity))) +
+  geom_point() +
+  geom_abline(lty = "twodash") +
+  geom_smooth(method = "lm") +
+  xlab("TIDE activity (log2)") +
+  ylab("array activity (log2)")
+```
+
+
+# Session Info
+```{r}
+paste("Run time: ",format(Sys.time()-StartTime))
+getwd()
+date()
+sessionInfo()
+```
+

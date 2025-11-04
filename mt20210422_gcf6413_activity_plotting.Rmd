@@ -60,7 +60,7 @@ names(bc_list)<- gsub('.*//6413_[0-9]{1,2}_(.*?)_[CGAT]{6}.*_counts.tsv',
 
 
 # Import barcode annotation
-bc_annotation <- read.csv2("/DATA/usr/m.trauernicht/projects/TF_array/data/gcf6413_TFarrayseq/TF_barcode_association.csv")
+bc_annotation <- read.csv2("~/projects/TF_array/data/gcf6413_TFarrayseq/TF_barcode_association.csv")
 ```
 
 # Filter sequencing data
@@ -166,8 +166,8 @@ selection_df <- selection_df %>%
 
 
 # Import MPRA data
-cDNA_df <- read.csv("/DATA/usr/m.trauernicht/projects/SuRE-TF/data/gcf6139_stimulation-2/results/mt20201209_reporter_activity_filt.csv", header = T)
-cDNA_df_1 <- read.csv("/DATA/usr/m.trauernicht/projects/SuRE-TF/data/gcf5927_stimulation-1/results/mt20201209_reporter_activity_filt.csv", header = T)
+cDNA_df <- read.csv("/DATA/shared/projects/TF_REPORTERS/SuRE-TF/data/gcf6139_stimulation-2/results/mt20201209_reporter_activity_filt.csv", header = T)
+cDNA_df_1 <- read.csv("/DATA/shared/projects/TF_REPORTERS/SuRE-TF/data/gcf5927_stimulation-1/results/mt20201209_reporter_activity_filt.csv", header = T)
 cDNA_df_1 <- cDNA_df_1 %>% setnames(c("background", "promoter", 
                                       "spacing", "distance", "bc.number"),
                                     c("Background", "Promoter", "Spacing", 

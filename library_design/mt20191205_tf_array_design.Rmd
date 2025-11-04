@@ -249,7 +249,7 @@ tf.array.export <- tf.array2 %>% select(seq.name, seq.text)
  
 ## Run FIMO script 
 ```{bash run fimo db2_9, eval = FALSE, echo=FALSE, message=FALSE, warnings=FALSE}
-# motfn=/home/f.comoglio/mydata/Annotations/TFDB/Curated_Natoli/update_2017/20170320_pwms_selected.meme
+# motfn=/home/m.trauernicht/mydata/data/TFDB/natoli_update_2017/20170320_pwms_selected.meme
 # odir=/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array_3
 # query=/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array.fasta
 
@@ -263,7 +263,7 @@ We built a TF motif matrix using -log10 transformed FIMO scores. We used this fe
 
 ```{r build tf motif matrices db2: primer_1, out.width= "100%", fig.align= "center", warning= FALSE}
 # load motif Metadata --> PWM feature matrix
-tib_pwm_tf_array  <- get_pwm_feature_matrix(motif_meta_fn = '/home/f.comoglio/mydata/Annotations/TFDB/Curated_Natoli/update_2017/fc181127_curated_metadata_no_composite_filt.csv', 
+tib_pwm_tf_array  <- get_pwm_feature_matrix(motif_meta_fn = '/home/m.trauernicht/mydata/data/TFDB/natoli_update_2017/fc181127_curated_metadata_no_composite_filt.csv', 
                                         fimo_fn       = '/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array_3/fimo.tsv',
                                         db            = 2)
 ```

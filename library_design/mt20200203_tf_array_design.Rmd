@@ -34,7 +34,7 @@ library(seqinr)
 library(seqLogo)
 library(universalmotif)
 library(Biostrings)
-library(SimRAD)
+#library(SimRAD)
 library(gtools)
 library(DNABarcodes)
 library(phylotools)
@@ -218,8 +218,8 @@ tf.array <- tf.array[,c(-2:-19)]
 # no TF binding in front of/after
 # EcoRI sites in exactly 2
 ## Adding 3x random 11bp 'motifs' that serve as negative control
-x <- cbind.data.frame(c(1:2000), c(""))
-names(x) <- c("iteration", "oligo")
+x <- cbind.data.frame(c(1), c("GGCGTTTACTATGGGAGGTCTATATAAGCAGAGCTCGTTTAGTGAACCGTCAGATC"))
+names(x) <- c("seq.name", "seq.text")
 
 
 # Generate 2000 random 10bp oligos
@@ -242,16 +242,16 @@ tf.array2$seq.text <- paste(substrRight(tf.array2$reporter, 4),
 
 # Write fasta file to run on FIMO script
 tf.array.export <- tf.array2 %>% select(seq.name, seq.text)
-# dat2fasta(tf.array.export, outfile = "/DATA/usr/m.trauernicht/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array.fasta")     
+dat2fasta(x, outfile = "/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/x.fasta")     
 ```
 
 
  
 ## Run FIMO script 
 ```{bash run fimo db2_9, eval = FALSE, echo=FALSE, message=FALSE, warnings=FALSE}
-# motfn=/home/f.comoglio/mydata/Annotations/TFDB/Curated_Natoli/update_2017/20170320_pwms_selected.meme
-# odir=/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array_3
-# query=/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array.fasta
+# motfn=/home/m.trauernicht/mydata/data/TFDB/natoli_update_2017/20170320_pwms_selected.meme
+# odir=/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/fimo
+# query=/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/x.fasta
 
 # nice -n 19 fimo --no-qvalue --thresh 1e-4 --verbosity 1 --o $odir $motfn $query 
 ```
@@ -263,8 +263,8 @@ We built a TF motif matrix using -log10 transformed FIMO scores. We used this fe
 
 ```{r build tf motif matrices db2: primer_1, out.width= "100%", fig.align= "center", warning= FALSE}
 # load motif Metadata --> PWM feature matrix
-tib_pwm_tf_array  <- get_pwm_feature_matrix(motif_meta_fn = '/home/f.comoglio/mydata/Annotations/TFDB/Curated_Natoli/update_2017/fc181127_curated_metadata_no_composite_filt.csv', 
-                                        fimo_fn       = '/home/m.trauernicht/mydata/projects/tf_activity_reporter/data/oligo_design/output/fimo/tf_array_3/fimo.tsv',
+tib_pwm_tf_array  <- get_pwm_feature_matrix(motif_meta_fn = '/home/m.trauernicht/mydata/data/TFDB/natoli_update_2017/fc181127_curated_metadata_no_composite_filt.csv', 
+                                        fimo_fn       = '/DATA/usr/m.trauernicht/projects/TF_array/data/library_design/output/fimo/fimo.tsv',
                                         db            = 2)
 ```
 
